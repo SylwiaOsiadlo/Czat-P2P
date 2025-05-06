@@ -18,6 +18,7 @@ class PeerServer:
         while True:
             conn, addr = s.accept()
             print(f"[SERVER] New connection from {addr}")
+            self.peer.peers.append(conn)
             threading.Thread(target=self.handle_client, args=(conn,), daemon=True).start()
 
     def handle_client(self, conn):
@@ -29,6 +30,19 @@ class PeerServer:
                         break
                     msg = decode_message(data.decode())
                     print(f"[RECEIVED] {msg}")
+
+                    # Forward wiadomości do innych peerów
+                    self.forward_message(data.decode(), exclude=conn)
+
                 except Exception as e:
                     print(f"[ERROR] {e}")
                     break
+        self.peer.peers.remove(conn)
+
+    def forward_message(self, raw_message: str, exclude):
+        for sock in self.peer.peers:
+            if sock != exclude:
+                try:
+                    sock.sendall(raw_message.encode())
+                except:
+                    continue
