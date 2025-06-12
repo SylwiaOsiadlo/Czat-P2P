@@ -1,106 +1,107 @@
-# === p2p_chat/main.py ===
-from chat.peer import Peer
-from PyQt5.QtWidgets import QApplication, QMainWindow, QTabWidget, QWidget, QVBoxLayout, QTextEdit, QLineEdit, QPushButton
-from PyQt5.QtCore import QMetaObject, Qt, Q_ARG, pyqtSlot, QTimer
-import threading
-import time
-import sys
-
-import sys
-import time
-import threading
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QTabWidget, QWidget,
     QVBoxLayout, QTextEdit, QLineEdit, QPushButton
 )
-from PyQt5.QtCore import QTimer, pyqtSlot
+from PyQt5.QtCore import QTimer, pyqtSlot, QObject, pyqtSignal
+from chat.peer import Peer
+import sys
+import time
 
-from chat.peer import Peer  # zakładam poprawny import
 
 class ChatTab(QWidget):
     def __init__(self, peer):
         super().__init__()
         self.peer = peer
+        self.init_ui()
+
+    def init_ui(self):
         self.layout = QVBoxLayout(self)
 
+        # Pole wyświetlające wiadomości
         self.chat_display = QTextEdit()
         self.chat_display.setReadOnly(True)
         self.layout.addWidget(self.chat_display)
 
+        # Pole wprowadzania wiadomości
         self.message_input = QLineEdit()
         self.layout.addWidget(self.message_input)
 
+        # Przycisk wysyłania
         self.send_button = QPushButton("Wyślij")
         self.layout.addWidget(self.send_button)
 
+        # Połączenia sygnałów
         self.send_button.clicked.connect(self.send_message)
         self.message_input.returnPressed.connect(self.send_message)
 
-    def display_message(self, message):
-        self.chat_display.append(message)
-
     def send_message(self):
-        message = self.message_input.text()
+        message = self.message_input.text().strip()
         if message:
             self.peer.broadcast(message)
             self.display_message(f"You: {message}")
             self.message_input.clear()
 
+    def display_message(self, message):
+        self.chat_display.append(message)
+
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("P2P Chat - Multi Peer")
-        self.setGeometry(100, 100, 600, 400)
+        self.peers = []
+        self.init_ui()
 
+    def init_ui(self):
+        self.setWindowTitle("P2P Chat - Multi Peer")
+        self.setGeometry(100, 100, 800, 600)
+
+        # Główny widget z zakładkami
         self.tabs = QTabWidget()
         self.setCentralWidget(self.tabs)
 
-        self.peers = []
-
     @pyqtSlot(object)
     def add_peer_tab(self, peer):
+        # Tworzenie nowej zakładki dla peera
         chat_tab = ChatTab(peer)
-        peer.set_tab(chat_tab)       # peer knows its tab
-        peer.gui = chat_tab              # peer can call display_message
+        peer.tab_widget = chat_tab
+
+        # Połączenie sygnału od peera z metodą głównego okna
+        peer.signals.message_received.connect(self.handle_received_message)
+
         self.peers.append(peer)
         self.tabs.addTab(chat_tab, f"Peer {peer.port}")
-        print(f"[GUI] Dodaję zakładkę dla {peer.port}")
 
-    def display_message(self, sender, message):
-        # Find the peer and tab matching sender
+    @pyqtSlot(str, str)
+    def handle_received_message(self, sender, message):
+        # Wyświetl wiadomość we wszystkich zakładkach OPRÓCZ nadawcy
         for peer in self.peers:
-            if f"{peer.host}:{peer.port}" == sender and hasattr(peer, 'tab_widget'):
-                peer.tab_widget.display_message(message)
-                break
+            if hasattr(peer, 'tab_widget'):
+                peer.tab_widget.display_message(f"{sender}: {message}")
 
-# app = QApplication(sys.argv)
-# window = MainWindow()
-# window.show()
 
 def start_peer(port, connect_to=None):
     peer = Peer("127.0.0.1", port)
     peer.start()
-    time.sleep(1)
+
+    # Małe opóźnienie dla stabilności
+    time.sleep(0.5)
+
     if connect_to:
         peer.connect("127.0.0.1", connect_to)
-    time.sleep(1)
-    peer.broadcast(f"Hello from {port}")
 
+    # Dodanie peera do GUI
     QTimer.singleShot(0, lambda: window.add_peer_tab(peer))
-
     return peer
+
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     window = MainWindow()
     window.show()
 
-    def launch_peers():
-        start_peer(6000)
-        start_peer(6001, 6000)
-        start_peer(6002, 6001)
-
-    QTimer.singleShot(0, launch_peers)
+    # Uruchomienie peerów z opóźnieniem dla stabilności połączeń
+    QTimer.singleShot(100, lambda: start_peer(6000))
+    QTimer.singleShot(200, lambda: start_peer(6001, 6000))
+    QTimer.singleShot(300, lambda: start_peer(6002, 6001))
 
     sys.exit(app.exec_())

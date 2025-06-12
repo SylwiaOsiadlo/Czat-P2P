@@ -1,13 +1,12 @@
-# === p2p_chat/chat/server.py ===
-# Serwer nasłuchujący na nowe połączenia TCP (inne peery chcące się połączyć).
-
 import socket
 import threading
 from .protocol import decode_message
 
+
 class PeerServer:
     def __init__(self, peer):
         self.peer = peer
+        self.message_cache = set()
 
     def listen(self):
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -17,8 +16,8 @@ class PeerServer:
 
         while True:
             conn, addr = s.accept()
-            print(f"[SERVER] New connection from {addr}")
-            self.peer.peers[conn] = addr
+            peer_addr = f"{addr[0]}:{addr[1]}"
+            self.peer.peers[conn] = peer_addr
             threading.Thread(target=self.handle_client, args=(conn,), daemon=True).start()
 
     def handle_client(self, conn):
@@ -26,25 +25,35 @@ class PeerServer:
             while True:
                 try:
                     data = conn.recv(1024)
-                    print(f'data: {data}')
                     if not data:
                         break
-                    msg = decode_message(data.decode())
-                    print(f"[RECEIVED] {msg}")
 
-                    # Forward wiadomości do innych peerów
-                    self.forward_message(data.decode(), exclude=conn)
+                    msg_str = data.decode()
+                    msg = decode_message(msg_str)
 
-                except Exception as e:
-                    print(f"[ERROR] {e}")
+                    if msg['content'] not in self.message_cache:
+                        self.message_cache.add(msg['content'])
+
+                        if hasattr(self.peer, 'gui_handler'):
+                            self.peer.gui_handler.message_received.emit(msg['sender'], msg['content'])
+
+                        self.forward_message(msg_str, exclude=conn)
+
+                except Exception:
                     break
-        if conn in self.peer.peers:
-            del self.peer.peers[conn]
+
+        self._cleanup_connection(conn)
 
     def forward_message(self, raw_message: str, exclude):
-        for sock in self.peer.peers:
-            if sock != exclude:
+        msg = decode_message(raw_message)
+        for sock in list(self.peer.peers.keys()):
+            if sock != exclude and self.peer.peers[sock] != msg['sender']:
                 try:
                     sock.sendall(raw_message.encode())
                 except:
-                    continue
+                    self._cleanup_connection(sock)
+
+    def _cleanup_connection(self, conn):
+        if conn in self.peer.peers:
+            del self.peer.peers[conn]
+            conn.close()

@@ -1,85 +1,108 @@
-import os
-import PyQt5
-from PyQt5.QtCore import QTimer
-
-# Konfiguracja ścieżki do pluginów Qt
-plugin_path = os.path.join(os.path.dirname(PyQt5.__file__), "Qt", "plugins")
-os.environ["QT_QPA_PLATFORM_PLUGIN_PATH"] = plugin_path
-
+import socket
 import threading
-from .server import PeerServer
-from .client import connect_to_peer
-from .protocol import encode_message, decode_message
+import json
+import time
+from PyQt5.QtCore import QTimer, pyqtSignal, QObject
+
+
+class PeerSignals(QObject):
+    message_received = pyqtSignal(str, str)  # sender, message
+
 
 class Peer:
-    def __init__(self, host: str, port: int):
+    def __init__(self, host, port):
         self.host = host
         self.port = port
-        self.peers = {}  # sock -> peer_address
+        self.peers = {}
         self.running = True
-        self.gui = None
-        self.tab_widget = None
+        self.signals = PeerSignals()
+        self.message_history = set()
 
     def start(self):
-        # Start server listener
-        server = PeerServer(self)
-        threading.Thread(target=server.listen, daemon=True).start()
+        # Start server thread
+        server_thread = threading.Thread(target=self._run_server, daemon=True)
+        server_thread.start()
 
-        # Start receive loop
-        threading.Thread(target=self._receive_loop, daemon=True).start()
+        # Start receiver thread
+        receiver_thread = threading.Thread(target=self._receive_loop, daemon=True)
+        receiver_thread.start()
 
-    def connect(self, peer_host: str, peer_port: int):
-        sock = connect_to_peer(peer_host, peer_port)
-        if sock:
+    def _run_server(self):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.bind((self.host, self.port))
+            s.listen()
+            print(f"[{self.port}] Server started")
+
+            while self.running:
+                conn, addr = s.accept()
+                peer_addr = f"{addr[0]}:{addr[1]}"
+                self.peers[conn] = peer_addr
+                print(f"[{self.port}] New connection from {peer_addr}")
+
+    def connect(self, peer_host, peer_port):
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.connect((peer_host, peer_port))
             peer_addr = f"{peer_host}:{peer_port}"
             self.peers[sock] = peer_addr
+            return True
+        except:
+            return False
 
-            if self.gui:
-                QTimer.singleShot(0, lambda: self.gui.add_peer_tab(peer_addr))
+    def broadcast(self, message):
+        message_id = f"{time.time()}-{self.port}"
+        self.message_history.add(message_id)
 
-    def broadcast(self, message: str):
-        encoded = encode_message(f"{self.host}:{self.port}", message)
-        disconnected = []
-
-        for sock, peer_addr in list(self.peers.items()):
+        msg = self._create_message(message, message_id)
+        for sock in list(self.peers.keys()):
             try:
-                sock.sendall(encoded.encode())
-                print(f'sendall {encoded}')
-            except Exception:
-                disconnected.append(sock)
-
-        for sock in disconnected:
-            peer_addr = self.peers.pop(sock, None)
-            sock.close()
-
-    def set_tab(self, tab_widget):
-        self.tab_widget = tab_widget
+                sock.sendall(msg.encode())
+            except:
+                self._remove_peer(sock)
 
     def _receive_loop(self):
         while self.running:
             for sock in list(self.peers.keys()):
                 try:
                     data = sock.recv(1024)
-                    if not data:
-                        del self.peers[sock]
-                        sock.close()
-                        continue
+                    if data:
+                        self._process_message(data.decode())
+                except:
+                    self._remove_peer(sock)
+            time.sleep(0.1)
 
-                    message = decode_message(data.decode())
-                    sender = message["sender"]
-                    content = message["content"]
+    def _process_message(self, raw_msg):
+        try:
+            msg = json.loads(raw_msg)
+            message_id = msg['message_id']
 
-                    if self.gui:
-                        QTimer.singleShot(0, lambda s=sender, c=content: self.gui.display_message(f"{s}: {c}"))
+            # Ignore if message already processed or from self
+            if (message_id in self.message_history or
+                    msg['sender'] == f"{self.host}:{self.port}"):
+                return
 
-                except Exception as e:
-                    print(f"[Receive error] {e}")
-                    if sock in self.peers:
-                        del self.peers[sock]
-                    sock.close()
+            self.message_history.add(message_id)
+            self.signals.message_received.emit(msg['sender'], msg['content'])
 
-    def _disconnect_peer(self, sock):
+            # Forward to other peers (flooding prevention)
+            for sock in list(self.peers.keys()):
+                try:
+                    sock.sendall(raw_msg.encode())
+                except:
+                    self._remove_peer(sock)
+
+        except json.JSONDecodeError:
+            pass
+
+    def _create_message(self, content, message_id):
+        return json.dumps({
+            'sender': f"{self.host}:{self.port}",
+            'content': content,
+            'message_id': message_id
+        })
+
+    def _remove_peer(self, sock):
         if sock in self.peers:
-            print(f"[Peer disconnected] {self.peers[sock]}")
-            self.peers.pop(sock, None)
             sock.close()
+            del self.peers[sock]
