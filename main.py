@@ -1,254 +1,96 @@
-from PyQt5.QtWidgets import (
-    QApplication, QMainWindow, QTabWidget, QWidget,
-    QVBoxLayout, QTextEdit, QLineEdit, QPushButton, QLabel, QMessageBox, QStackedLayout, QGroupBox
-)
-from PyQt5.QtCore import pyqtSlot
-from chat.peer import Peer
 import sys
-import time
+from PyQt5.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QTabWidget, QVBoxLayout, QLineEdit,
+    QPushButton, QMessageBox, QLabel
+)
+from gui.chat_window import ChatTab
+from utils.auth import register_user, authenticate_user
+from utils.logger import logger
+from storage.chat_db import init_db, set_user_active
+from config import settings
 
-class ChatTab(QWidget):
+
+class MainApp(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.peer = None
-        self.nickname = None
-        self.room_password = "admin"
-        self.nicknames = []
-        self.tab_index = 0
+        self.setWindowTitle("P2P Chat - Multiuser")
+        self.resize(800, 600)
 
-        self.stack = QStackedLayout()
-        self.setLayout(self.stack)
+        self.tabs = QTabWidget()
+        self.setCentralWidget(self.tabs)
 
-        self.login_widget = QWidget()
-        self.chat_widget = QWidget()
-
-        self.stack.addWidget(self.login_widget)
-        self.stack.addWidget(self.chat_widget)
-
+        self.login_tab = QWidget()
+        self.tabs.addTab(self.login_tab, "Logowanie")
         self.init_login_ui()
-        self.init_chat_ui()
-
-        self.stack.setCurrentWidget(self.login_widget)
-
-    def bind_index(self, index):
-        self.tab_index = index
 
     def init_login_ui(self):
         layout = QVBoxLayout()
-        self.login_widget.setLayout(layout)
+        self.login_tab.setLayout(layout)
 
-        self.login_label = QLabel("Podaj nickname i hasło, aby dołączyć do pokoju:")
-        layout.addWidget(self.login_label)
+        self.info_label = QLabel("Zaloguj się lub zarejestruj nowego użytkownika")
+        layout.addWidget(self.info_label)
 
-        self.hp_group_box = QGroupBox("Host peer")
-        hp_group_layout = QVBoxLayout()
-        self.hp_group_box.setLayout(hp_group_layout)
-
-        self.host_ip_input = QLineEdit()
-        self.host_ip_input.setPlaceholderText("IP hosta")
-        self.host_ip_input.setText("127.0.0.1")
-        hp_group_layout.addWidget(self.host_ip_input)
-
-        self.host_port_input = QLineEdit()
-        self.host_port_input.setPlaceholderText("Port hosta")
-        self.host_port_input.setText("6000")
-        hp_group_layout.addWidget(self.host_port_input)
-        layout.addWidget(self.hp_group_box)
-
-        self.rp_group_box = QGroupBox("Zdalny peer")
-        rp_group_layout = QVBoxLayout()
-        self.rp_group_box.setLayout(rp_group_layout)
-
-        self.remote_ip_input = QLineEdit()
-        self.remote_ip_input.setPlaceholderText("IP zdalnego peera")
-        self.remote_ip_input.setText("127.0.0.1")
-        rp_group_layout.addWidget(self.remote_ip_input)
-
-        self.destination_port_input = QLineEdit()
-        self.destination_port_input.setPlaceholderText("Port zdalnego peera")
-        self.destination_port_input.setText("6001")
-        rp_group_layout.addWidget(self.destination_port_input)
-        layout.addWidget(self.rp_group_box)
-
-        self.nickname_input = QLineEdit()
-        self.nickname_input.setPlaceholderText("Nickname")
-        layout.addWidget(self.nickname_input)
+        self.username_input = QLineEdit()
+        self.username_input.setPlaceholderText("Nazwa użytkownika")
+        layout.addWidget(self.username_input)
 
         self.password_input = QLineEdit()
         self.password_input.setPlaceholderText("Hasło")
         self.password_input.setEchoMode(QLineEdit.Password)
         layout.addWidget(self.password_input)
 
-        self.login_button = QPushButton("Dołącz")
-        self.login_button.clicked.connect(self.join_room)
+        self.login_button = QPushButton("Zaloguj")
+        self.login_button.clicked.connect(self.login_user)
         layout.addWidget(self.login_button)
 
-        self.create_button = QPushButton("Utwórz i dołącz")
-        self.create_button.clicked.connect(self.create_room)
-        layout.addWidget(self.create_button)
+        self.register_button = QPushButton("Zarejestruj")
+        self.register_button.clicked.connect(self.register_user)
+        layout.addWidget(self.register_button)
 
-    def create_room(self):
-        ip_text = self.host_ip_input.text().strip()
-        port_text = self.host_port_input.text().strip()
-        nickname = self.nickname_input.text().strip()
-        password_text = self.password_input.text().strip()
-        port_number = 6000
-
-        try:
-            port_number = int(port_text)
-        except ValueError:
-            port_number = None
-
-        peer = start_peer(ip_text, port_number)
-        peer.bind_tab_widget(self)
-        peer.signals.message_received.connect(window.handle_received_message)
-        window.peers.append(peer)
-
-        self.nickname = nickname
-        self.peer = peer
-        self.room_password = password_text
-        self.nicknames.append(nickname)
-
-        window.tabs.setTabText(self.tab_index, "Peer " + str(self.tab_index+1) + " - " + nickname)
-        self.stack.setCurrentWidget(self.chat_widget)
-
-    def validate_login(self, nickname, password):
-        if password == self.room_password:
-            if nickname not in self.nicknames:
-                self.nicknames.append(nickname)
-                return True
-        return False
-
-    def join_room(self):
-        nickname = self.nickname_input.text().strip()
+    def login_user(self):
+        username = self.username_input.text().strip()
         password = self.password_input.text().strip()
 
-        host_ip_text = self.host_ip_input.text().strip()
-        host_port_text = self.host_port_input.text().strip()
-
-        remote_ip_text = self.remote_ip_input.text().strip()
-        destination_port_text = self.destination_port_input.text().strip()
-
-        host_port_number = 6000
-        destination_port_number = 6001
-
-        try:
-            host_port_number = int(host_port_text)
-            destination_port_number = int(destination_port_text)
-        except ValueError:
-            host_port_number = None
-            destination_port_number = None
-
-        if nickname:
-            self.nickname = nickname
-
-            peer = start_peer(host_ip_text, host_port_number, remote_ip_text, destination_port_number, nickname, password)
-            peer.bind_tab_widget(self)
-
-            peer.signals.message_received.connect(window.handle_received_message)
-            window.peers.append(peer)
-            self.peer = peer
-
-            window.tabs.setTabText(self.tab_index, "Peer " + str(self.tab_index+1) + " - " + nickname)
-            self.stack.setCurrentWidget(self.chat_widget)
-
-        else:
-            self.login_label.setText("Błędny nickname lub hasło. Spróbuj ponownie:")
-
-    def close_chat(self):
-        if self.peer:
-            self.peer.stop()
-
-    def reset_tab_name(self):
-        window.tabs.setTabText(self.tab_index, "Peer " + str(self.tab_index + 1))
-
-    def init_chat_ui(self):
-        layout = QVBoxLayout()
-        self.chat_widget.setLayout(layout)
-
-        self.chat_display = QTextEdit()
-        self.chat_display.setReadOnly(True)
-        layout.addWidget(self.chat_display)
-
-        self.message_input = QLineEdit()
-        layout.addWidget(self.message_input)
-
-        self.send_button = QPushButton("Wyślij")
-        layout.addWidget(self.send_button)
-
-        self.end_button = QPushButton("Zamknij połączenie")
-        layout.addSpacing(20)
-        layout.addWidget(self.end_button)
-
-        self.send_button.clicked.connect(self.send_message)
-        self.message_input.returnPressed.connect(self.send_message)
-        self.end_button.clicked.connect(self.close_chat)
-
-    def send_message(self):
-        if not self.nickname:
+        if not authenticate_user(username, password):
+            QMessageBox.warning(self, "Błąd", "Nieprawidłowe dane logowania")
             return
-        message = self.message_input.text().strip()
-        if message:
-            self.peer.broadcast(f"{self.nickname}: {message}")
-            self.display_message(f"You: {message}")
-            self.message_input.clear()
 
-    def display_message(self, message):
-        if self.nickname:
-            self.chat_display.append(message)
+        port = settings.default_base_port + hash(username) % 1000
+        set_user_active(username, port)
 
-    def show_warning(self):
-        QMessageBox.warning(self, "Błąd połączenia", "Niepoprawny nickname lub hasło!")
+        chat_tab = ChatTab(username, port)
+        index = self.tabs.addTab(chat_tab, username)
+        self.tabs.setCurrentIndex(index)
 
-    def show_error(self, error_message):
-        QMessageBox.critical(self, "Błąd", error_message)
+        logger.info(f"[MAIN] Dodano zakładkę użytkownika {username} (port {port})")
 
+    def register_user(self):
+        username = self.username_input.text().strip()
+        password = self.password_input.text().strip()
 
-class MainWindow(QMainWindow):
-    def __init__(self):
-        super().__init__()
-        self.tabs = None
-        self.peers = []
-        self.init_ui()
+        if not username or not password:
+            QMessageBox.warning(self, "Błąd", "Wprowadź nazwę użytkownika i hasło")
+            return
 
-    def init_ui(self):
-        self.setWindowTitle("P2P Chat - Multi Peer")
-        self.setGeometry(100, 100, 800, 600)
+        if not register_user(username, password):
+            QMessageBox.warning(self, "Błąd", "Użytkownik już istnieje")
+            return
 
-        self.tabs = QTabWidget()
-        self.setCentralWidget(self.tabs)
-
-    @pyqtSlot(object)
-    def add_peer_tab(self):
-        chat_tab = ChatTab()
-        index = self.tabs.addTab(chat_tab, f"Peer {self.tabs.count()+1}")
-        chat_tab.bind_index(index)
-
-    @pyqtSlot(str, str)
-    def handle_received_message(self, sender, message):
-        for peer in self.peers:
-            if hasattr(peer, 'tab_widget') and peer.tab_widget.nickname:
-                peer.tab_widget.display_message(message)
+        QMessageBox.information(self, "Sukces", "Użytkownik zarejestrowany pomyślnie")
 
 
-def start_peer(host, port, remote_ip=None, connect_to=None, nickname=None, password=None):
-    peer = Peer(host, port)
-    peer.start()
-
-    time.sleep(0.5)
-
-    if connect_to:
-        peer.connect(remote_ip, connect_to, nickname, password)
-
-    return peer
-
-
-if __name__ == "__main__":
+if __name__ == '__main__':
+    init_db()
     app = QApplication(sys.argv)
-    window = MainWindow()
-    window.show()
 
-    for _ in range(3):
-        window.add_peer_tab()
+    # Apply stylesheet
+    try:
+        with open("styles/theme.qss", "r") as f:
+            app.setStyleSheet(f.read())
+    except Exception as e:
+        print("Nie udało się załadować stylu:", e)
 
+    main_window = MainApp()
+    main_window.show()
     sys.exit(app.exec_())
+
