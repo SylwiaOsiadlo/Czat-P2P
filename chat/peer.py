@@ -11,6 +11,7 @@ class PeerSignals(QObject):
 
 class Peer:
     def __init__(self, host, port):
+        self.tab_widget = None
         self.host = host
         self.port = port
         self.peers = {}  # Format: {socket: peer_addr}
@@ -44,7 +45,7 @@ class Peer:
                     if self.running:
                         print(f"[{self.port}] Error accepting connection")
 
-    def connect(self, peer_host, peer_port):
+    def connect(self, peer_host, peer_port, nickname, peer_pass):
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.settimeout(2)  # Set timeout for connection
@@ -53,6 +54,9 @@ class Peer:
             with self.lock:
                 self.peers[sock] = peer_addr
             sock.settimeout(None)  # Reset timeout after connection
+
+            msg = self._create_hello_message(nickname, peer_pass)
+
             return True
         except Exception as e:
             print(f"Connection error: {e}")
@@ -84,6 +88,18 @@ class Peer:
                     sock.settimeout(0.5)  # Non-blocking with timeout
                     data = sock.recv(1024)
                     if data:
+                        msg = json.loads(data.decode())
+                        message_type = msg['message_type']
+
+                        if message_type == 'hello':
+                            nickname = msg['nickname']
+                            password = msg['password']
+
+                            con_valid = self.tab_widget.validate_login(nickname, password)
+
+                            if not con_valid:
+                                self._remove_peer(sock)
+
                         self._process_message(data.decode())
                 except socket.timeout:
                     continue
@@ -104,19 +120,6 @@ class Peer:
             self.message_history.add(message_id)
             self.signals.message_received.emit(msg['sender'], msg['content'])
 
-            # Forward to other peers (except the one we received from)
-            with self.lock:
-                peers_to_remove = []
-                for sock in self.peers.keys():
-                    try:
-                        if self.peers[sock] != msg['sender']:  # Don't send back to sender
-                            sock.sendall(raw_msg.encode())
-                    except:
-                        peers_to_remove.append(sock)
-
-                for sock in peers_to_remove:
-                    self._remove_peer(sock)
-
         except (json.JSONDecodeError, KeyError) as e:
             print(f"Message processing error: {e}")
 
@@ -125,6 +128,13 @@ class Peer:
             'sender': f"{self.host}:{self.port}",
             'content': content,
             'message_id': message_id
+        })
+
+    def _create_hello_message(self, nickname, password):
+        return json.dumps({
+            'mesage_type': 'hello',
+            'nickname': nickname,
+            'password': password
         })
 
     def _remove_peer(self, sock):

@@ -2,7 +2,6 @@ import socket
 import threading
 from .protocol import decode_message
 
-
 class PeerServer:
     def __init__(self, peer):
         self.peer = peer
